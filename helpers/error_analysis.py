@@ -2,7 +2,7 @@ import matplotlib.pyplot as plt
 
 # Labels
 labels = [
-    "Intent Reasoning Error",
+    "Swarm Analysis Error",
     "Binary Intent Error",
     "Motion Misunderstanding",
     "Visual Perception Error",
@@ -11,17 +11,17 @@ labels = [
 ]
 
 # Data
-ours = [5.99, 1.81, 9.41, 5.41, 2.61, 74.77]
-baseline = [9.18, 3.36, 13.04, 6.60, 5.54, 62.48]
+ours = [7.64, 2.81, 8.41, 5.41, 4.86, 71.27]
+baseline = [9.93, 3.36, 13.04, 6.60, 5.54, 61.12]
 
 # Colors (lighter "Correct")
 colors = [
-    "#A58ACF",  # Intent reasoning
-    "#C9C75A",  # Binary intent
-    "#D291BC",  # Motion
-    "#6A8FBF",  # Visual
-    "#76B061",  # Scale
-    "#BFDDE6"   # Correct (lighter blue)
+    "#B07AA1",  # Intent reasoning
+    "#59A14F",  # Binary intent
+    "#FFBE7D",  # Motion
+    "#4E79A7",  # Visual
+    "#F28E2B",  # Scale
+    "#A0CBE8"   # Correct (lighter blue)
 ]
 
 # Create figure
@@ -72,5 +72,5 @@ fig.legend(
 )
 
 plt.tight_layout()
-plt.savefig('error_analysis.png', dpi=600, bbox_inches='tight')
+plt.savefig('CoT_error_analysis.png', dpi=600, bbox_inches='tight')
 plt.show()

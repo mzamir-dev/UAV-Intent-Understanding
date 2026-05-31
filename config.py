@@ -14,28 +14,28 @@ class DataConfig:
     dataset_name: str = "MultiUAV"          # "MultiUAV" | "Anti-UAV" | "NPS"
 
     # ── MultiUAV paths ─────────────────────────────────────────────────────
-    multiuav_train_frames: str = "/images/train"
-    multiuav_train_labels: str = "/labels/train"
-    multiuav_test_frames:  str = "/images/val"
-    multiuav_test_labels:  str = "/labels/val"
-    multiuav_train_json:   str = "/VQA/TD_UAV_new_QA_train.json"
-    multiuav_test_json:    str = "/VQA/TD_UAV_new_QA_test.json"
+    multiuav_train_frames: str = "/media/zamir/267a161c-11fb-45e4-86b4-b11cba0972ac/MM-AntiUAV-Yolo/images/train"
+    multiuav_train_labels: str = "/media/zamir/267a161c-11fb-45e4-86b4-b11cba0972ac/MM-AntiUAV-Yolo/labels/train"
+    multiuav_test_frames:  str = "/media/zamir/267a161c-11fb-45e4-86b4-b11cba0972ac/MM-AntiUAV-Yolo/images/val"
+    multiuav_test_labels:  str = "/media/zamir/267a161c-11fb-45e4-86b4-b11cba0972ac/MM-AntiUAV-Yolo/labels/val"
+    multiuav_train_json:   str = "/media/zamir/267a161c-11fb-45e4-86b4-b11cba0972ac/MM-AntiUAV/VQA/TD_UAV_new_QA_train.json"
+    multiuav_test_json:    str = "/media/zamir/267a161c-11fb-45e4-86b4-b11cba0972ac/MM-AntiUAV/VQA/TD_UAV_new_QA_test.json"
 
     # ── Anti-UAV paths (update as needed) ─────────────────────────────────
-    antiuav_train_frames: str = "/images/train"
-    antiuav_train_labels: str = "/labels/train"
-    antiuav_test_frames:  str = "/images/val"
-    antiuav_test_labels:  str = "/labels/val"
-    antiuav_train_json:   str = "/Anti_UAV_train_QA.json"
-    antiuav_test_json:    str = "/Anti_UAV_val.json"
+    antiuav_train_frames: str = "/media/zamir/267a161c-11fb-45e4-86b4-b11cba0972ac/Anti-UAV-Yolo/images/train"
+    antiuav_train_labels: str = "/media/zamir/267a161c-11fb-45e4-86b4-b11cba0972ac/Anti-UAV-Yolo/labels/train"
+    antiuav_test_frames:  str = "/media/zamir/267a161c-11fb-45e4-86b4-b11cba0972ac/Anti-UAV-Yolo/images/val"
+    antiuav_test_labels:  str = "/media/zamir/267a161c-11fb-45e4-86b4-b11cba0972ac/Anti-UAV-Yolo/labels/val"
+    antiuav_train_json:   str = "/media/zamir/267a161c-11fb-45e4-86b4-b11cba0972ac/Anti-UAV-RGBT/Anti_UAV_train_QA.json"
+    antiuav_test_json:    str = "/media/zamir/267a161c-11fb-45e4-86b4-b11cba0972ac/Anti-UAV-RGBT/Anti_UAV_val.json"
 
     # ── NPS paths (update as needed) ───────────────────────────────────────
-    nps_train_frames: str = "/images/train"
-    nps_train_labels: str = "/labels/train"
-    nps_test_frames:  str = "/images/val"
-    nps_test_labels:  str = "/labels/val"
-    nps_train_json:   str = "/VQA/NPS_QA_train.json"
-    nps_test_json:    str = "/VQA/NPS_QA_test.json"
+    nps_train_frames: str = "/media/zamir/267a161c-11fb-45e4-86b4-b11cba0972ac/NPS-Yolo/images/train"
+    nps_train_labels: str = "/media/zamir/267a161c-11fb-45e4-86b4-b11cba0972ac/NPS-Yolo/labels/train"
+    nps_test_frames:  str = "/media/zamir/267a161c-11fb-45e4-86b4-b11cba0972ac/NPS-Yolo/images/val"
+    nps_test_labels:  str = "/media/zamir/267a161c-11fb-45e4-86b4-b11cba0972ac/NPS-Yolo/labels/val"
+    nps_train_json:   str = "/media/zamir/267a161c-11fb-45e4-86b4-b11cba0972ac/MM-AntiUAV/VQA/NPS_QA_train.json"
+    nps_test_json:    str = "/media/zamir/267a161c-11fb-45e4-86b4-b11cba0972ac/MM-AntiUAV/VQA/NPS_QA_test.json"
 
     # ── Frame sampling ─────────────────────────────────────────────────────
     num_frames: int = 16                    # frames sampled per video

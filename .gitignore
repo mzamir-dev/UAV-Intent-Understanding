@@ -149,6 +149,10 @@ dmypy.json
 /datasets
 .runs/
 runs/
+caption_and_QA/
+helpers/
+.caption_and_QA/
+.helpers/
 paper_results/
 .paper_figures/
 paper_figures/
