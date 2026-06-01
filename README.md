@@ -41,9 +41,6 @@ python val.py \
 ```
 Change the dataset and checkpoint path according to your own local setup.
 
-* **Ablation study**: To do Ablations study search the keyword "Ablation" in the [model.py](https://github.com/Muhammad-Zamir/end_to_end_UAV_understanding/blob/main/model.) file and un comment the ablation lines and comment the original line:
-
-
 * **LLM Choice**: To change the LLM  model, just rename the model name in [config.py](https://github.com/Muhammad-Zamir/end_to_end_UAV_understanding/blob/main/config.py):
 
 ## Pretrained Weights
