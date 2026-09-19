@@ -1,22 +1,4 @@
-"""
-Video-LLaVA-7B Fine-tuning for MM-AntiUAV UAV Behaviour Understanding
-======================================================================
-Matches the working code structure exactly:
-- HuggingFace Trainer (no custom loop)
-- No LoRA (full fine-tune with frozen vision tower)
-- PIL images (not numpy)
-- low_cpu_mem_usage=True
-- No gradient checkpointing complications
 
-Usage:
-    # Train
-    python video_llava_train.py --mode train --dataset MultiUAV
-
-    # Evaluate
-    python video_llava_train.py --mode eval \
-        --checkpoint ./runs/video_llava/final \
-        --dataset MultiUAV
-"""
 
 import os
 import gc
@@ -71,13 +53,13 @@ class VideoLLaVAConfig:
     model_name   = "LanguageBind/Video-LLaVA-7B-hf"
 
     # Data paths — update these to match your server
-    data_root    = "/media/zamir/267a161c-11fb-45e4-86b4-b11cba0972ac/MM-AntiUAV"
-    train_qa     = "/media/zamir/267a161c-11fb-45e4-86b4-b11cba0972ac/MM-AntiUAV/VQA/TD_UAV_new_QA_train.json"
-    test_qa      = "/media/zamir/267a161c-11fb-45e4-86b4-b11cba0972ac/MM-AntiUAV/VQA/TD_UAV_new_QA_test.json"
+    data_root    = ""
+    train_qa     = ""
+    test_qa      = ""
 
     # Frames directory — same structure as CAPITA dataset
     # Expected: <frames_root>/<video_id>/<frame>.jpg
-    frames_root  = "/media/zamir/267a161c-11fb-45e4-86b4-b11cba0972ac/MM-AntiUAV-Yolo/images"
+    frames_root  = ""
 
     # Output
     output_dir   = "runs/models/video_llava_finetuned"
@@ -115,11 +97,6 @@ cfg = VideoLLaVAConfig()
 # ═════════════════════════════════════════════════════════════════════════════
 
 class UAVVQADataset(Dataset):
-    """
-    MM-AntiUAV dataset for Video-LLaVA.
-    Mirrors working code structure exactly.
-    Each sample = one (video_frames, question, answer) triple.
-    """
 
     def __init__(
         self,

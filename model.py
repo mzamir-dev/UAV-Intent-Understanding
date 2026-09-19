@@ -1,12 +1,5 @@
 """
-CAPITA Model Architecture
-Context-Aware Predictive Intent and Trajectory Attention for Anti-UAV Systems
-
-Stages:
-  1. Dual-Stream Encoder  (FFT Appearance + Blur-Signal Motion)
-  2. Swarm Graph Temporal Network
-  3. Causal Intent Reasoning Module (CTRM)
-  4. Multi-Task QA-Aware Output Heads (4 heads + TinyLlama)
+ Model Architecture
 """
 
 import torch
@@ -28,17 +21,6 @@ class FFTAppearanceEncoder(nn.Module):
     """
     Encodes full frames using pixel + FFT streams, then extracts
     drone-region features via box-guided spatial attention.
-
-    This gives the model BOTH:
-    - Global scene context (environment, sky, terrain)
-    - Drone-local appearance (rotor harmonics, blur signature)
-
-    Without adding any new module to the architecture.
-
-    Input:  frames     [B, T, 3, H, W]       full frames
-            boxes      [B, T, M, 5]           drone boxes (cx,cy,w,h)
-            drone_mask [B, T, M]
-    Output: [B, T, M, appearance_feat_dim]
     """
 
     def __init__(self, cfg: CAPITAConfig):
@@ -70,10 +52,9 @@ class FFTAppearanceEncoder(nn.Module):
         )
 
         # ── Global scene pooling (NEW — gives environment context) ────────
-        # Pools full feature map → single scene vector
+        
         self.global_pool = nn.AdaptiveAvgPool2d(1)
 
-        # ── Drone-local ROI pooling ────────────────────────────────────────
         # Extracts features at each drone's box location from feature map
         self.roi_pool = nn.AdaptiveAvgPool2d(1)
 
@@ -449,10 +430,6 @@ class SpatioTemporalGNN(nn.Module):
     Spatial:  GAT attention within each frame graph
     Temporal: Transformer attention over frame sequence
 
-    Input:  [B, T, M, drone_feat_dim]
-            [B, T, M, 5]  boxes
-            [B, T, M]     drone_mask
-    Output: [B, swarm_feat_dim]
     """
 
     def __init__(self, cfg: CAPITAConfig):
@@ -597,16 +574,6 @@ class CausalIntentReasoningModule(nn.Module):
     """
     Models causal relationships in drone behavior over time.
 
-    Key idea: Rather than correlating features, we model causal chains:
-    "speed_decreased → formation_tightened → THEREFORE surveillance_intent"
-
-    Uses a lightweight Structural Causal Model (SCM):
-    - Causal discovery via attention masking (lower-triangular = past causes future)
-    - Causal representation separates causes from effects
-    - Combines with swarm features for final intent representation
-
-    Input:  swarm_feat [B, swarm_feat_dim]
-    Output: intent_repr [B, intent_repr_dim=768]
     """
 
     def __init__(self, cfg: CAPITAConfig):
@@ -709,12 +676,6 @@ class CausalIntentReasoningModule(nn.Module):
 # ═════════════════════════════════════════════════════════════════════════════
 
 class ClassificationHead(nn.Module):
-    """
-    Lightweight classification head for closed-form QA types:
-    - yes_no       (2 classes)
-    - uav_size     (6 classes)
-    - environment  (8 classes)
-    """
 
     def __init__(self, input_dim: int, num_classes: int, dropout: float = 0.2):
         super().__init__()
@@ -772,22 +733,6 @@ class MultiTokenStoppingCriteria(StoppingCriteria):
 
 
 class TinyLlamaGenerativeHead(nn.Module):
-    """
-    TinyLlama-1.1B fine-tuned with LoRA adapters for:
-    1. Caption generation  (video-level intent description)
-    2. Motion description  (open-ended behavior QA)
-
-    LoRA Strategy:
-    - Base TinyLlama weights are fully FROZEN (no gradient)
-    - LoRA injects trainable low-rank matrices into q/k/v/o attention projections
-    - Only LoRA parameters + intent_proj + prefix_proj are updated during training
-    - This gives ~1-3% trainable params vs full fine-tuning
-
-    Intent injection:
-    - Intent representation [B, 768] is projected into TinyLlama embedding space
-    - Projected as N soft visual prefix tokens prepended to question tokens
-    - This follows the LLaVA / Flamingo style of visual conditioning
-    """
 
     def __init__(self, cfg: CAPITAConfig):
         super().__init__()

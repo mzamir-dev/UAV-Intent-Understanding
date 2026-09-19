@@ -1,7 +1,3 @@
-"""
-CAPITA Configuration File
-Context-Aware Predictive Intent and Trajectory Attention for Anti-UAV Systems
-"""
 
 import os
 from dataclasses import dataclass, field
@@ -14,39 +10,38 @@ class DataConfig:
     dataset_name: str = "MultiUAV"          # "MultiUAV" | "Anti-UAV" | "NPS"
 
     # ── MultiUAV paths ─────────────────────────────────────────────────────
-    multiuav_train_frames: str = "/media/zamir/267a161c-11fb-45e4-86b4-b11cba0972ac/MM-AntiUAV-Yolo/images/train"
-    multiuav_train_labels: str = "/media/zamir/267a161c-11fb-45e4-86b4-b11cba0972ac/MM-AntiUAV-Yolo/labels/train"
-    multiuav_test_frames:  str = "/media/zamir/267a161c-11fb-45e4-86b4-b11cba0972ac/MM-AntiUAV-Yolo/images/val"
-    multiuav_test_labels:  str = "/media/zamir/267a161c-11fb-45e4-86b4-b11cba0972ac/MM-AntiUAV-Yolo/labels/val"
-    multiuav_train_json:   str = "/media/zamir/267a161c-11fb-45e4-86b4-b11cba0972ac/MM-AntiUAV/VQA/TD_UAV_new_QA_train.json"
-    multiuav_test_json:    str = "/media/zamir/267a161c-11fb-45e4-86b4-b11cba0972ac/MM-AntiUAV/VQA/TD_UAV_new_QA_test.json"
+    multiuav_train_frames: str = ""
+    multiuav_train_labels: str = ""
+    multiuav_test_frames:  str = ""
+    multiuav_test_labels:  str = ""
+    multiuav_train_json:   str = ""
+    multiuav_test_json:    str = ""
 
     # ── Anti-UAV paths (update as needed) ─────────────────────────────────
-    antiuav_train_frames: str = "/media/zamir/267a161c-11fb-45e4-86b4-b11cba0972ac/Anti-UAV-Yolo/images/train"
-    antiuav_train_labels: str = "/media/zamir/267a161c-11fb-45e4-86b4-b11cba0972ac/Anti-UAV-Yolo/labels/train"
-    antiuav_test_frames:  str = "/media/zamir/267a161c-11fb-45e4-86b4-b11cba0972ac/Anti-UAV-Yolo/images/val"
-    antiuav_test_labels:  str = "/media/zamir/267a161c-11fb-45e4-86b4-b11cba0972ac/Anti-UAV-Yolo/labels/val"
-    antiuav_train_json:   str = "/media/zamir/267a161c-11fb-45e4-86b4-b11cba0972ac/Anti-UAV-RGBT/Anti_UAV_train_QA.json"
-    antiuav_test_json:    str = "/media/zamir/267a161c-11fb-45e4-86b4-b11cba0972ac/Anti-UAV-RGBT/Anti_UAV_val.json"
+    antiuav_train_frames: str = ""
+    antiuav_train_labels: str = ""
+    antiuav_test_frames:  str = ""
+    antiuav_test_labels:  str = ""
+    antiuav_train_json:   str = ""
+    antiuav_test_json:    str = ""
 
     # ── NPS paths (update as needed) ───────────────────────────────────────
-    nps_train_frames: str = "/media/zamir/267a161c-11fb-45e4-86b4-b11cba0972ac/NPS-Yolo/images/train"
-    nps_train_labels: str = "/media/zamir/267a161c-11fb-45e4-86b4-b11cba0972ac/NPS-Yolo/labels/train"
-    nps_test_frames:  str = "/media/zamir/267a161c-11fb-45e4-86b4-b11cba0972ac/NPS-Yolo/images/val"
-    nps_test_labels:  str = "/media/zamir/267a161c-11fb-45e4-86b4-b11cba0972ac/NPS-Yolo/labels/val"
-    nps_train_json:   str = "/media/zamir/267a161c-11fb-45e4-86b4-b11cba0972ac/MM-AntiUAV/VQA/NPS_QA_train.json"
-    nps_test_json:    str = "/media/zamir/267a161c-11fb-45e4-86b4-b11cba0972ac/MM-AntiUAV/VQA/NPS_QA_test.json"
+    nps_train_frames: str = "/images/train"
+    nps_train_labels: str = "/labels/train"
+    nps_test_frames:  str = "/images/val"
+    nps_test_labels:  str = "labels/val"
+    nps_train_json:   str = "/VQA/NPS_QA_train.json"
+    nps_test_json:    str = "/VQA/NPS_QA_test.json"
 
     # ── Frame sampling ─────────────────────────────────────────────────────
-    num_frames: int = 16                    # frames sampled per video
-    sampling_strategy: str = "adaptive"    # "uniform" | "adaptive" (keyframe-biased)
-    adaptive_threshold: float = 0.15       # bbox change threshold for keyframe detection
-
+    num_frames: int = 16                    
+    sampling_strategy: str = "adaptive"    
+    adaptive_threshold: float = 0.15       
     # ── Image sizes ────────────────────────────────────────────────────────
     image_size_multiuav: int = 640
     image_size_antiuav:  int = 640
     image_size_nps:      int = 1280
-    roi_patch_size: int = 64               # cropped ROI around each drone
+    roi_patch_size: int = 64               
 
     # ── Swarm limits ───────────────────────────────────────────────────────
     max_drones_per_frame: int = 35         # pad/truncate to this number
@@ -83,27 +78,27 @@ class ModelConfig:
 
     # ── Stage 4: TinyLlama + LoRA + Classification Heads ───────────────────
     tinyllama_path: str = "TinyLlama/TinyLlama-1.1B-Chat-v1.0"
-    llm_input_proj_dim: int = 2048         # TinyLlama hidden dim
-    max_gen_length: int = 128              # max tokens for caption/motion generation
-    max_input_length: int = 64             # max question token length
-    n_prefix_tokens: int = 4              # number of soft visual prefix tokens injected
+    llm_input_proj_dim: int = 2048         
+    max_gen_length: int = 128             
+    max_input_length: int = 64             
+    n_prefix_tokens: int = 4              
 
     # ── LoRA configuration ─────────────────────────────────────────────────
     # Low-Rank Adaptation: injects trainable rank-r matrices into attention layers
     # All base TinyLlama weights are FROZEN — only LoRA params + intent_proj updated
     use_lora: bool = True
-    lora_r: int = 16                       # rank of LoRA decomposition
-    lora_alpha: int = 32                   # LoRA scaling factor (alpha/r = effective LR scale)
-    lora_dropout: float = 0.10             # dropout on LoRA layers
-    use_8bit: bool = False                 # 8-bit quantization (saves VRAM, set True if OOM)
+    lora_r: int = 16                       
+    lora_alpha: int = 32                   
+    lora_dropout: float = 0.10            
+    use_8bit: bool = False                 
     # VRAM guide:
     #   use_8bit=False (fp16): TinyLlama ~2.2GB  (faster)
     #   use_8bit=True  (int8): TinyLlama ~0.6GB  (use if hitting OOM)
 
     # Classification head output sizes
     yes_no_classes: int = 2                # Yes / No
-    uav_size_classes: int = 6             # tiny/small/medium/large/multiple/unknown
-    environment_classes: int = 8          # open_sky/urban/forest/coastal/indoor/night/fog/unknown
+    uav_size_classes: int = 6             
+    environment_classes: int = 8          
 
     # ── Projection ─────────────────────────────────────────────────────────
     shared_proj_dim: int = 512

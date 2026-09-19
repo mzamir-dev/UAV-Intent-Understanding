@@ -1,6 +1,6 @@
-# End_to_End Anti-UAV intetnt understanding*
+# Anti-UAV intent understanding*
 
-This repository is the offical implementation of [**End_to_End Anti-UAV intetnt understanding**](https://arxiv.org/abs/).
+This repository is the offical implementation of [**Anti-UAV intent understanding**](https://arxiv.org/abs/).
 
 ## Installation
 
@@ -43,14 +43,12 @@ Change the dataset and checkpoint path according to your own local setup.
 
 * **LLM Choice**: To change the LLM  model, just rename the model name in [config.py](https://github.com/Muhammad-Zamir/end_to_end_UAV_understanding/blob/main/config.py):
 
-## Pretrained Weights
-
-- [x] Please find the pre-trained weights of TDUAV dataset from [Google Drive](https://drive.google.com/drive/folders/1WmEStgIurUSdGDp-udN1C9SNuCD4Gl6b)
-
-
 ## Acknowledgment
 
 - We clean the code and add comments in the code using ChatGPT and Soonet4.6. Many thanks for their open source models.
+## Update and pretrained weights
+
+coming soon
 
 ## Citation
 
