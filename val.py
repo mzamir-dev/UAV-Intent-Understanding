@@ -1,30 +1,33 @@
 """
-CAPITA Evaluation Script
-Computes: BLEU-1/2/3/4, ROUGE-1/2/L, METEOR, SPICE, ACC
-For all 4 QA heads: caption, motion_description, yes_no, uav_size, environment
+CAPITA Evaluation Script (fixed)
+Text metrics: BLEU-1/2/3/4, ROUGE-1/2/L, METEOR, SPICE  (all tasks)
+VQA metrics : binary exact-match ACC (yes/no), open-ended token F1 (other QA),
+              composite VQA score = (ACC_bin + F1_open) / 2   (QA only, not caption)
 """
 
-import os
 import json
+import re
+import string
 import argparse
+import traceback
 import numpy as np
+from collections import defaultdict, Counter
 from pathlib import Path
+from typing import Dict, List, Optional
 from tqdm import tqdm
-from collections import defaultdict
-from typing import Dict, List
 
 import torch
 from torch.cuda.amp import autocast
+from torch.utils.data import DataLoader
 
-# ── Metrics imports (from your existing script) ───────────────────────────────
 from nltk.translate.bleu_score import sentence_bleu, SmoothingFunction
 from nltk.translate.meteor_score import meteor_score as nltk_meteor
+from nltk.stem import PorterStemmer
 from rouge_score import rouge_scorer
 import nltk
-import re
 
 try:
-    nltk.data.find('wordnet')
+    nltk.data.find('corpora/wordnet')
 except LookupError:
     nltk.download('wordnet')
     nltk.download('omw-1.4')
@@ -37,28 +40,22 @@ try:
 except ImportError:
     print("⚠ SPICE not available — using fallback SPICE approximation")
 
-# ── CAPITA imports ─────────────────────────────────────────────────────────────
 from config import CAPITAConfig
 from dataset import CAPITADataset, capita_collate_fn
 from model import CAPITAModel
 
-from torch.utils.data import DataLoader
-
 
 # ═════════════════════════════════════════════════════════════════════════════
-# PASTE YOUR TextMetrics CLASS HERE (unchanged from your script)
+# METRICS
 # ═════════════════════════════════════════════════════════════════════════════
 
 class VQAMetrics:
-    """
-    Metrics calculator with CORRECT ACC calculation matching JTD-UAV.
-    """
-    
+
     def __init__(self):
         self.smoothing = SmoothingFunction().method4
         self.rouge = rouge_scorer.RougeScorer(['rouge1', 'rouge2', 'rougeL'], use_stemmer=True)
-        
-        # SPICE scorer
+        self.stemmer = PorterStemmer()
+
         self.spice_scorer = None
         if SPICE_AVAILABLE:
             try:
@@ -67,457 +64,194 @@ class VQAMetrics:
             except Exception as e:
                 print(f"⚠️ SPICE initialization failed: {e}")
 
+    def normalize_answer(self, answer: str) -> str:
+        answer = str(answer).lower()
+        answer = answer.translate(str.maketrans("", "", string.punctuation))
+        return re.sub(r"\s+", " ", answer).strip()
+
     def compute_bleu(self, reference: str, candidate: str) -> dict:
-        """Compute BLEU-1/2/3/4 scores - FIXED VERSION."""
-        # Tokenize properly
         ref_tokens = reference.lower().split()
         cand_tokens = candidate.lower().split()
+        if len(cand_tokens) == 0 or len(ref_tokens) == 0:
+            return {'BLEU-1': 0.0, 'BLEU-2': 0.0, 'BLEU-3': 0.0, 'BLEU-4': 0.0}
 
-        if len(cand_tokens) == 0:
-            return {'BLEU-1': 0, 'BLEU-2': 0, 'BLEU-3': 0, 'BLEU-4': 0}
-        
-        # For sentence_bleu: references must be list of lists
-        references = [ref_tokens]  # Single reference, but in correct format
-        
-        # Handle edge cases for n-grams
-        max_n = min(4, len(cand_tokens))  # Can't compute BLEU-4 if candidate < 4 words
-        
-        bleu_scores = {}
-        
-        # BLEU-1
-        try:
-            bleu_scores['BLEU-1'] = sentence_bleu(
-                references, cand_tokens, 
-                weights=(1, 0, 0, 0), 
-                smoothing_function=self.smoothing
-            )
-        except:
-            bleu_scores['BLEU-1'] = 0.0
-        
-        # BLEU-2
-        if max_n >= 2:
+        weights = {
+            'BLEU-1': (1, 0, 0, 0),
+            'BLEU-2': (0.5, 0.5, 0, 0),
+            'BLEU-3': (1 / 3, 1 / 3, 1 / 3, 0),
+            'BLEU-4': (0.25, 0.25, 0.25, 0.25),
+        }
+        out = {}
+        for name, w in weights.items():
+            n = sum(1 for x in w if x > 0)
+            if len(cand_tokens) < n:
+                out[name] = 0.0
+                continue
             try:
-                bleu_scores['BLEU-2'] = sentence_bleu(
-                    references, cand_tokens, 
-                    weights=(0.5, 0.5, 0, 0), 
-                    smoothing_function=self.smoothing
-                )
-            except:
-                bleu_scores['BLEU-2'] = 0.0
-        else:
-            bleu_scores['BLEU-2'] = 0.0
-        
-        # BLEU-3
-        if max_n >= 3:
-            try:
-                bleu_scores['BLEU-3'] = sentence_bleu(
-                    references, cand_tokens, 
-                    weights=(0.33, 0.33, 0.33, 0), 
-                    smoothing_function=self.smoothing
-                )
-            except:
-                bleu_scores['BLEU-3'] = 0.0
-        else:
-            bleu_scores['BLEU-3'] = 0.0
-        
-        # BLEU-4
-        if max_n >= 4:
-            try:
-                bleu_scores['BLEU-4'] = sentence_bleu(
-                    references, cand_tokens, 
-                    weights=(0.25, 0.25, 0.25, 0.25), 
-                    smoothing_function=self.smoothing
-                )
-            except:
-                bleu_scores['BLEU-4'] = 0.0
-        else:
-            bleu_scores['BLEU-4'] = 0.0
-        
-        return bleu_scores
+                out[name] = float(sentence_bleu([ref_tokens], cand_tokens,
+                                                weights=w, smoothing_function=self.smoothing))
+            except Exception:
+                out[name] = 0.0
+        return out
 
     def compute_rouge(self, reference: str, candidate: str) -> dict:
-        """Compute ROUGE-1/2/L scores."""
         if len(candidate) == 0:
-            return {'ROUGE-1': 0, 'ROUGE-2': 0, 'ROUGE-L': 0}
-
-        scores = self.rouge.score(reference, candidate)
-        return {
-            'ROUGE-1': scores['rouge1'].fmeasure,
-            'ROUGE-2': scores['rouge2'].fmeasure,
-            'ROUGE-L': scores['rougeL'].fmeasure,
-        }
+            return {'ROUGE-1': 0.0, 'ROUGE-2': 0.0, 'ROUGE-L': 0.0}
+        s = self.rouge.score(reference, candidate)
+        return {'ROUGE-1': s['rouge1'].fmeasure,
+                'ROUGE-2': s['rouge2'].fmeasure,
+                'ROUGE-L': s['rougeL'].fmeasure}
 
     def compute_meteor(self, reference: str, candidate: str) -> float:
-        """Compute METEOR score."""
         if len(candidate) == 0:
             return 0.0
         try:
-            return meteor_score([reference.lower().split()], candidate.lower().split())
-        except:
+            # BUG FIX: the import is named nltk_meteor, not meteor_score
+            return float(nltk_meteor([reference.lower().split()], candidate.lower().split()))
+        except Exception as e:
+            print(f"⚠ METEOR failed: {e}")
             return 0.0
 
     def compute_spice_simple(self, reference: str, candidate: str) -> float:
-        """
-        Simple SPICE approximation when Java SPICE fails.
-        Uses semantic similarity based on word overlap with stemming.
-        """
-        from nltk.stem import PorterStemmer
-        stemmer = PorterStemmer()
-        
-        # Stopwords
-        stopwords = {'a', 'an', 'the', 'is', 'are', 'was', 'were', 'be', 'been',
-                     'have', 'has', 'had', 'do', 'does', 'did', 'to', 'of', 'in',
-                     'for', 'on', 'with', 'at', 'by', 'from', 'and', 'or', 'but',
-                     'this', 'that', 'it', 'its', 'they', 'them', 'their'}
-        
-        # Tokenize and stem
-        ref_words = [stemmer.stem(w) for w in reference.lower().split() 
-                     if w.strip('.,!?') not in stopwords and len(w) > 1]
-        cand_words = [stemmer.stem(w) for w in candidate.lower().split() 
-                      if w.strip('.,!?') not in stopwords and len(w) > 1]
-        
-        if len(ref_words) == 0 or len(cand_words) == 0:
+        stop = {'a', 'an', 'the', 'is', 'are', 'was', 'were', 'be', 'been', 'have', 'has',
+                'had', 'do', 'does', 'did', 'to', 'of', 'in', 'for', 'on', 'with', 'at',
+                'by', 'from', 'and', 'or', 'but', 'this', 'that', 'it', 'its', 'they',
+                'them', 'their'}
+
+        def toks(t):
+            return {self.stemmer.stem(w.strip('.,!?')) for w in t.lower().split()
+                    if w.strip('.,!?') not in stop and len(w) > 1}
+
+        r, c = toks(reference), toks(candidate)
+        if not r or not c:
             return 0.0
-        
-        ref_set = set(ref_words)
-        cand_set = set(cand_words)
-        
-        # F1 score of stemmed content words
-        intersection = len(ref_set & cand_set)
-        precision = intersection / len(cand_set) if len(cand_set) > 0 else 0
-        recall = intersection / len(ref_set) if len(ref_set) > 0 else 0
-        
-        if precision + recall == 0:
-            return 0.0
-        
-        f1 = 2 * precision * recall / (precision + recall)
-        return f1
+        inter = len(r & c)
+        p, rec = inter / len(c), inter / len(r)
+        return 0.0 if p + rec == 0 else 2 * p * rec / (p + rec)
 
     def compute_spice(self, reference: str, candidate: str) -> float:
-        """Compute SPICE score with fallback."""
         if self.spice_scorer is None:
             return self.compute_spice_simple(reference, candidate)
-        
         try:
             gts = {"0": [reference]}
-            res = {"0": [candidate]}
+            res = {"0": [candidate if candidate.strip() else "empty"]}
             avg_score, _ = self.spice_scorer.compute_score(gts, res)
+            if isinstance(avg_score, dict):
+                avg_score = avg_score.get('All', {}).get('f', 0.0)
             return float(avg_score)
-        except Exception as e:
-            # Fallback to simple SPICE
+        except Exception:
             return self.compute_spice_simple(reference, candidate)
 
-    def compute_spice_batch(self, references: list, candidates: list) -> tuple:
-        """Compute SPICE for batch with fallback."""
-        if self.spice_scorer is None:
-            scores = [self.compute_spice_simple(r, c) for r, c in zip(references, candidates)]
-            return np.mean(scores), scores
-        
-        try:
-            gts = {str(i): [ref] for i, ref in enumerate(references)}
-            res = {str(i): [cand if len(cand.strip()) > 0 else "empty"] 
-                for i, cand in enumerate(candidates)}
-            
-            avg_score, scores_list = self.spice_scorer.compute_score(gts, res)
-            
-            # FIX: Handle dict return type
-            if isinstance(avg_score, dict):
-                avg_score = avg_score.get('All', {}).get('f', 0.0)  # Extract F-score
-            
-            # FIX: Handle dict in scores_list
-            if isinstance(scores_list, list) and len(scores_list) > 0:
-                if isinstance(scores_list[0], dict):
-                    scores_list = [s.get('All', {}).get('f', 0.0) for s in scores_list]
-            
-            return float(avg_score), [float(s) for s in scores_list]
-        except Exception as e:
-            print(f"⚠️ SPICE batch failed, using simple approximation: {e}")
-            scores = [self.compute_spice_simple(r, c) for r, c in zip(references, candidates)]
-            return np.mean(scores), scores
+    def compute_binary_accuracy(self, reference: str, candidate: str) -> float:
+        return float(self.normalize_answer(reference) == self.normalize_answer(candidate))
 
-    # ==================== FIXED ACC CALCULATION ====================
-    
-    def compute_acc_f1(self, reference: str, candidate: str) -> float:
-        """
-        ACC using F1 score of tokens (likely what JTD-UAV uses).
-        
-        This gives higher scores because it considers both precision and recall.
-        """
-        # Clean and tokenize
-        ref_tokens = set(re.findall(r'\b\w+\b', reference.lower()))
-        cand_tokens = set(re.findall(r'\b\w+\b', candidate.lower()))
-        
-        # Remove very common words
-        stopwords = {'a', 'an', 'the', 'is', 'are', 'was', 'were', 'be', 
-                     'to', 'of', 'in', 'for', 'on', 'with', 'at', 'by'}
-        ref_tokens = ref_tokens - stopwords
-        cand_tokens = cand_tokens - stopwords
-        
-        if len(ref_tokens) == 0 and len(cand_tokens) == 0:
-            return 1.0
-        if len(ref_tokens) == 0 or len(cand_tokens) == 0:
-            return 0.0
-        
-        # Calculate F1
-        intersection = len(ref_tokens & cand_tokens)
-        precision = intersection / len(cand_tokens)
-        recall = intersection / len(ref_tokens)
-        
-        if precision + recall == 0:
-            return 0.0
-        
-        f1 = 2 * precision * recall / (precision + recall)
-        return f1
-
-    import re
-    import string
-    
-    def normalize_answer(self, answer: str) -> str:
-        """Normalize answers for exact-match evaluation."""
-        answer = answer.lower()
-        answer = answer.translate(
-            str.maketrans("", "", string.punctuation)
-        )
-        answer = re.sub(r"\s+", " ", answer).strip()
-        return answer
-    
-    
-    def compute_binary_accuracy(
-        self, reference: str, candidate: str
-    ) -> float:
-        """Exact-match accuracy for binary VQA."""
-        ref = self.normalize_answer(reference)
-        cand = self.normalize_answer(candidate)
-    
-        return float(ref == cand)
-
-    def compute_acc_recall(self, reference: str, candidate: str) -> float:
-        """
-        ACC using Recall only (what percentage of reference words appear in candidate).
-        
-        JTD-UAV might use this - it's more lenient.
-        """
-        ref_tokens = set(re.findall(r'\b\w+\b', reference.lower()))
-        cand_tokens = set(re.findall(r'\b\w+\b', candidate.lower()))
-        
-        # Remove stopwords
-        stopwords = {'a', 'an', 'the', 'is', 'are', 'was', 'were', 'be', 
-                     'to', 'of', 'in', 'for', 'on', 'with', 'at', 'by',
-                     'and', 'or', 'but', 'this', 'that', 'it', 'its'}
-        ref_tokens = ref_tokens - stopwords
-        cand_tokens = cand_tokens - stopwords
-        
-        if len(ref_tokens) == 0:
-            return 1.0
-        
-        matched = len(ref_tokens & cand_tokens)
-        recall = matched / len(ref_tokens)
-        
-        return recall
-
-    def compute_acc_lenient(self, reference: str, candidate: str) -> float:
-        """
-        Lenient ACC - checks if KEY answer words are present.
-        
-        This is likely closer to what JTD-UAV uses for high ACC scores.
-        """
-        # Extract key content words (nouns, verbs, adjectives, numbers)
-        # Simple heuristic: words > 3 chars that aren't stopwords
-        
-        stopwords = {'a', 'an', 'the', 'is', 'are', 'was', 'were', 'be', 'been',
-                     'have', 'has', 'had', 'do', 'does', 'did', 'will', 'would',
-                     'could', 'should', 'can', 'may', 'might', 'must', 'shall',
-                     'to', 'of', 'in', 'for', 'on', 'with', 'at', 'by', 'from',
-                     'and', 'or', 'but', 'nor', 'so', 'yet', 'both', 'either',
-                     'neither', 'not', 'only', 'than', 'too', 'very', 'just',
-                     'also', 'now', 'here', 'there', 'when', 'where', 'why',
-                     'how', 'all', 'each', 'every', 'few', 'more', 'most',
-                     'other', 'some', 'such', 'no', 'any', 'this', 'that',
-                     'these', 'those', 'what', 'which', 'who', 'whom', 'whose',
-                     'it', 'its', 'they', 'them', 'their', 'i', 'you', 'he',
-                     'she', 'we', 'me', 'him', 'her', 'us', 'my', 'your', 'his',
-                     'about', 'into', 'through', 'during', 'before', 'after',
-                     'above', 'below', 'between', 'under', 'again', 'then'}
-        
-        ref_clean = reference.lower()
-        cand_clean = candidate.lower()
-        
-        # Get key words from reference
-        ref_words = re.findall(r'\b\w+\b', ref_clean)
-        key_words = [w for w in ref_words if w not in stopwords and len(w) > 2]
-        
-        if len(key_words) == 0:
-            return 1.0
-        
-        # Count how many key words appear in candidate
-        matched = sum(1 for w in key_words if w in cand_clean)
-        
-        return matched / len(key_words)
-
-    def compute_acc_semantic(self, reference: str, candidate: str) -> float:
-        """
-        Semantic ACC - uses stemming for better matching.
-        
-        "flying" matches "flies", "flew", etc.
-        """
-        from nltk.stem import PorterStemmer
-        stemmer = PorterStemmer()
-        
-        stopwords = {'a', 'an', 'the', 'is', 'are', 'was', 'were', 'be', 'been',
-                     'have', 'has', 'had', 'do', 'does', 'did', 'to', 'of', 'in',
-                     'for', 'on', 'with', 'at', 'by', 'from', 'and', 'or', 'but',
-                     'this', 'that', 'it', 'its', 'they', 'them', 'their'}
-        
-        # Tokenize and stem
-        ref_words = [stemmer.stem(w) for w in re.findall(r'\b\w+\b', reference.lower())
-                     if w not in stopwords and len(w) > 2]
-        cand_words = [stemmer.stem(w) for w in re.findall(r'\b\w+\b', candidate.lower())
-                      if w not in stopwords and len(w) > 2]
-        
-        if len(ref_words) == 0:
-            return 1.0
-        
-        ref_set = set(ref_words)
-        cand_set = set(cand_words)
-        
-        matched = len(ref_set & cand_set)
-        
-        # Use recall (what % of reference stems appear in candidate)
-        return matched / len(ref_set)
-
-    from collections import Counter
-
-    def compute_open_f1(
-        self, reference: str, candidate: str
-    ) -> float:
-        """Token-level F1 for open-ended VQA."""
-        ref_tokens = re.findall(
-            r"\b\w+\b", self.normalize_answer(reference)
-        )
-        cand_tokens = re.findall(
-            r"\b\w+\b", self.normalize_answer(candidate)
-        )
-    
-        ref_counts = Counter(ref_tokens)
-        cand_counts = Counter(cand_tokens)
-    
-        # Count overlapping tokens, including repeated occurrences.
-        overlap = sum(
-            (ref_counts & cand_counts).values()
-        )
-    
+    def compute_open_f1(self, reference: str, candidate: str) -> float:
+        ref_tokens = self.normalize_answer(reference).split()
+        cand_tokens = self.normalize_answer(candidate).split()
         if not ref_tokens and not cand_tokens:
             return 1.0
-    
         if not ref_tokens or not cand_tokens:
             return 0.0
-    
-        precision = overlap / len(cand_tokens)
-        recall = overlap / len(ref_tokens)
-    
-        if precision + recall == 0:
+        overlap = sum((Counter(ref_tokens) & Counter(cand_tokens)).values())
+        if overlap == 0:
             return 0.0
-    
-        return 2 * precision * recall / (precision + recall)
+        p, r = overlap / len(cand_tokens), overlap / len(ref_tokens)
+        return 2 * p * r / (p + r)
 
-    def compute_all(self, reference: str, candidate: str, question: str) -> dict:
-        """Compute all metrics including multiple ACC variants."""
+    def compute_all(self, reference: str, candidate: str, question: str = "",
+                    question_type: Optional[str] = None) -> dict:
+        """question_type: 'binary' | 'open' | 'caption' | None (auto-detect)."""
+        reference = str(reference)
+        candidate = str(candidate)
+
         metrics = {}
         metrics.update(self.compute_bleu(reference, candidate))
         metrics.update(self.compute_rouge(reference, candidate))
         metrics['METEOR'] = self.compute_meteor(reference, candidate)
         metrics['SPICE'] = self.compute_spice(reference, candidate)
-        
-         # Determine question type.
+        metrics['ACC'] = None
+        metrics['F1_OPEN'] = None
+
+        if question_type == 'caption':
+            return metrics
+
         if question_type is None:
-            normalized_ref = self.normalize_answer(reference)
-            is_binary = normalized_ref in {"yes", "no"}
+            is_binary = self.normalize_answer(reference) in {"yes", "no"}
         else:
             is_binary = question_type.lower() == "binary"
-    
+
         if is_binary:
-            metrics["ACC"] = self.compute_binary_accuracy(
-                reference, candidate
-            )
-            metrics["F1_OPEN"] = None
+            metrics['ACC'] = self.compute_binary_accuracy(reference, candidate)
         else:
-            metrics["ACC"] = None
-            metrics["F1_OPEN"] = self.compute_open_f1(
-                reference, candidate
-            )
-    
+            metrics['F1_OPEN'] = self.compute_open_f1(reference, candidate)
         return metrics
 
+    def compute_dataset_metrics(self, results: list) -> dict:
+        bin_s = [r['ACC'] for r in results if r.get('ACC') is not None]
+        open_s = [r['F1_OPEN'] for r in results if r.get('F1_OPEN') is not None]
+        acc_bin = float(np.mean(bin_s)) if bin_s else 0.0
+        f1_open = float(np.mean(open_s)) if open_s else 0.0
+        return {
+            'ACC_BIN': acc_bin,
+            'F1_OPEN': f1_open,
+            'VQA_SCORE': (acc_bin + f1_open) / 2,
+            'N_BIN': len(bin_s),
+            'N_OPEN': len(open_s),
+        }
 
 
 # ═════════════════════════════════════════════════════════════════════════════
-# LABEL INDEX → TEXT MAPS (mirrors dataset.py vocab)
+# HELPERS
 # ═════════════════════════════════════════════════════════════════════════════
 
-YES_NO_MAP   = {0: "No", 1: "Yes"}
+METRIC_NAMES = ['BLEU-1', 'BLEU-2', 'BLEU-3', 'BLEU-4',
+                'ROUGE-1', 'ROUGE-2', 'ROUGE-L',
+                'METEOR', 'SPICE', 'ACC', 'F1_OPEN']
 
-SIZE_MAP     = {
-    0: "tiny",    1: "small",   2: "medium",
-    3: "large",   4: "multiple", 5: "unknown"
+# task name -> forced question type (None = auto-detect from reference)
+TASK_QTYPE = {
+    'caption': 'caption',
+    'yes_no': 'binary',
+    'uav_size': 'open',
+    'environment': 'open',
+    'motion_description': 'open',
 }
 
-ENV_MAP      = {
-    0: "open sky", 1: "urban",   2: "forest",
-    3: "coastal",  4: "indoor",  5: "night",
-    6: "fog",      7: "unknown"
-}
+
+def summarize(vals: list) -> dict:
+    """Mean/std ignoring None (e.g. ACC is None for open questions)."""
+    vals = [v for v in vals if v is not None]
+    if not vals:
+        return {'mean': 0.0, 'std': 0.0, 'n': 0}
+    return {'mean': float(np.mean(vals)), 'std': float(np.std(vals)), 'n': len(vals)}
 
 
-def idx_to_text(idx: int, map_dict: dict) -> str:
-    return map_dict.get(int(idx), "unknown")
+def fmt(v) -> str:
+    return "  n/a" if v is None else f"{v:.4f}"
 
 
 # ═════════════════════════════════════════════════════════════════════════════
-# MAIN EVALUATION FUNCTION
+# EVALUATION
 # ═════════════════════════════════════════════════════════════════════════════
 
 @torch.no_grad()
-def evaluate(
-    model: CAPITAModel,
-    loader: DataLoader,
-    cfg: CAPITAConfig,
-    metrics_calc: TextMetrics,
-    device: torch.device,
-) -> (List[Dict], Dict):
-    """
-    Run full evaluation over the test set.
-    Returns:
-        all_predictions : list of per-sample prediction dicts
-        results_summary : dict of {metric_name: {mean, std}}
-    """
+def evaluate(model: CAPITAModel, loader: DataLoader, cfg: CAPITAConfig,
+             metrics_calc: VQAMetrics, device: torch.device):
     model.eval()
 
-    all_predictions = []
-
-    # Per-task metric accumulators
-    # Tasks: caption, motion, yes_no, size, environment
+    all_predictions: List[Dict] = []
     task_metrics = defaultdict(lambda: defaultdict(list))
-
-    metric_names = [
-        'BLEU-1', 'BLEU-2', 'BLEU-3', 'BLEU-4',
-        'ROUGE-1', 'ROUGE-2', 'ROUGE-L',
-        'METEOR', 'SPICE', 'ACC'
-    ]
+    qa_results: List[Dict] = []          # QA only (no caption) -> dataset-level ACC/F1
 
     for batch in tqdm(loader, desc="Evaluating"):
+        batch = {k: v.to(device) if isinstance(v, torch.Tensor) else v
+                 for k, v in batch.items()}
 
-        # ── Move batch to GPU ─────────────────────────────────────────────
-        batch = {
-            k: v.to(device) if isinstance(v, torch.Tensor) else v
-            for k, v in batch.items()
-        }
-
-        # ── Run model in generation mode ──────────────────────────────────
         with autocast(dtype=torch.float16, enabled=cfg.training.use_amp):
             preds = model(batch, generate=True)
             drone_feats = model.dual_stream_encoder(
-            batch["frames"], batch["roi_patches"], batch["boxes"], batch["drone_mask"])
-            swarm_feat  = model.swarm_gnn(drone_feats, batch["boxes"], batch["drone_mask"])
+                batch["frames"], batch["roi_patches"], batch["boxes"], batch["drone_mask"])
+            swarm_feat = model.swarm_gnn(drone_feats, batch["boxes"], batch["drone_mask"])
             intent_repr = model.ctrm(swarm_feat)
 
         B = len(preds["video_id"])
@@ -525,221 +259,154 @@ def evaluate(
         for b in range(B):
             vid_id = preds["video_id"][b]
 
-            # ── Evaluate caption (main question) ──────────────────────────
+            # ---- caption ----
             cap_pred = preds["caption_pred"][b]
-            cap_gt   = preds["caption_gt"][b]
-            cap_m    = metrics_calc.compute_all(cap_gt, cap_pred,
-                           question=batch["caption_question"][b])
-            for k, v in cap_m.items():
-                task_metrics["all_qa"][k].append(v)
-                task_metrics["caption"][k].append(v) 
+            cap_gt = preds["caption_gt"][b]
+            q = batch["caption_question"][b]
+            m = metrics_calc.compute_all(cap_gt, cap_pred, question=q, question_type='caption')
+            for k, v in m.items():
+                task_metrics["all"][k].append(v)
+                task_metrics["caption"][k].append(v)
             all_predictions.append({
-                "video_id": vid_id, "task_type": "caption",
-                "question": batch["caption_question"][b],
-                "generated_answer": cap_pred, "reference": cap_gt, **cap_m,
+                "video_id": vid_id, "task_type": "caption", "question": q,
+                "generated_answer": cap_pred, "reference": cap_gt, **m,
             })
 
-            # ── Evaluate all other QA pairs as generation tasks ────────────
+            # ---- other QA heads ----
             for q_key, a_key, task_name in [
-                ("yes_no_question",  "yes_no_answer_text",  "yes_no"),
-                ("size_question",    "size_answer_text",    "uav_size"),
-                ("env_question",     "env_answer_text",     "environment"),
-                ("motion_question",  "motion_answer_text",  "motion_description"),
+                ("yes_no_question", "yes_no_answer_text", "yes_no"),
+                ("size_question", "size_answer_text", "uav_size"),
+                ("env_question", "env_answer_text", "environment"),
+                ("motion_question", "motion_answer_text", "motion_description"),
             ]:
                 q = batch[q_key][b]
                 a = batch[a_key][b]
                 if not q.strip():
                     continue
-                # Generate answer using caption head (single generative model)
-                qa_out = model.llm_head(
-                    intent_repr[b:b+1],
-                    questions=[q],
-                    generate=True,
-                )
+
+                qa_out = model.llm_head(intent_repr[b:b + 1], questions=[q], generate=True)
                 pred_text = qa_out["generated_texts"][0]
-                m = metrics_calc.compute_all(a, pred_text, question=q)
+
+                m = metrics_calc.compute_all(a, pred_text, question=q,
+                                             question_type=TASK_QTYPE[task_name])
                 for k, v in m.items():
-                    task_metrics["all_qa"][k].append(v)
-                    task_metrics[task_name][k].append(v) 
+                    task_metrics["all"][k].append(v)
+                    task_metrics[task_name][k].append(v)
+                qa_results.append(m)
+
                 all_predictions.append({
-                    "video_id": vid_id, "task_type": task_name,
-                    "question": q, "generated_answer": pred_text,
-                    "reference": a, **m,
+                    "video_id": vid_id, "task_type": task_name, "question": q,
+                    "generated_answer": pred_text, "reference": a, **m,
                 })
 
-    # ── Compute summary statistics ─────────────────────────────────────────
-    # Overall (all tasks combined)
-    all_metric_values = defaultdict(list)
-    for task_name, task_m in task_metrics.items():
-        for metric_name, vals in task_m.items():
-            all_metric_values[metric_name].extend(vals)
+    # Overall = "all" bucket only (previous code summed every bucket -> double counting)
+    results_summary = {m: summarize(task_metrics["all"][m]) for m in METRIC_NAMES}
+    per_task_summary = {
+        t: {m: summarize(tm[m]) for m in METRIC_NAMES}
+        for t, tm in task_metrics.items() if t != "all"
+    }
+    dataset_metrics = metrics_calc.compute_dataset_metrics(qa_results)
 
-    results_summary = {}
-    for metric in metric_names:
-        vals = all_metric_values[metric]
-        results_summary[metric] = {
-            "mean": float(np.mean(vals)) if vals else 0.0,
-            "std":  float(np.std(vals))  if vals else 0.0,
-        }
-
-    # Per-task summary
-    per_task_summary = {}
-    for task_name, task_m in task_metrics.items():
-        per_task_summary[task_name] = {}
-        for metric in metric_names:
-            vals = task_m[metric]
-            per_task_summary[task_name][metric] = {
-                "mean": float(np.mean(vals)) if vals else 0.0,
-                "std":  float(np.std(vals))  if vals else 0.0,
-            }
-
-    return all_predictions, results_summary, per_task_summary
+    return all_predictions, results_summary, per_task_summary, dataset_metrics
 
 
 # ═════════════════════════════════════════════════════════════════════════════
-# SAVE RESULTS  (your existing save block, adapted for CAPITA)
+# SAVE RESULTS
 # ═════════════════════════════════════════════════════════════════════════════
 
-def save_results(
-    all_predictions: List[Dict],
-    results_summary: Dict,
-    per_task_summary: Dict,
-    output_dir: Path,
-    dataset_name: str,
-):
+def save_results(all_predictions, results_summary, per_task_summary,
+                 dataset_metrics, output_dir: Path, dataset_name: str):
     output_dir.mkdir(parents=True, exist_ok=True)
-    metric_names = [
-        'BLEU-1','BLEU-2','BLEU-3','BLEU-4',
-        'ROUGE-1','ROUGE-2','ROUGE-L',
-        'METEOR','SPICE','ACC'
-    ]
 
-    # ── Save all predictions ───────────────────────────────────────────────
-    output_path = output_dir / 'predictions.json'
-    with open(output_path, 'w') as f:
-        json.dump(all_predictions, f, indent=2)
-    print(f"\n✓ Predictions saved to: {output_path}")
+    # predictions first
+    pred_path = output_dir / 'predictions.json'
+    with open(pred_path, 'w') as f:
+        json.dump(all_predictions, f, indent=2, default=str)
+    print(f"\n✓ Predictions saved to: {pred_path}")
 
-    # ── Save metrics summary ───────────────────────────────────────────────
-    metrics_summary = {
-        'model':   'CAPITA — Anti-UAV Intent Understanding',
+    # metrics summary
+    summary = {
+        'model': 'CAPITA — Anti-UAV Intent Understanding',
         'dataset': dataset_name,
         'samples': len(all_predictions),
-        'overall_metrics': {
-            metric: {
-                'mean': float(results_summary[metric]['mean']),
-                'std':  float(results_summary[metric]['std']),
-            }
-            for metric in metric_names
-        },
+        'overall_metrics': results_summary,
         'per_task_metrics': per_task_summary,
+        'vqa_metrics': dataset_metrics,
     }
-
     metrics_path = output_dir / 'metrics_summary.json'
     with open(metrics_path, 'w') as f:
-        json.dump(metrics_summary, f, indent=2)
+        json.dump(summary, f, indent=2)
     print(f"✓ Metrics summary saved to: {metrics_path}")
 
-    task_acc = {}
-    for task_key, task_label in [
-        ("all_qa",             "ACC_Overall"),
-        ("caption",            "ACC_Caption"),
-        ("yes_no",             "ACC_YesNo"),
-        ("motion_description", "ACC_Motion"),
-        ("uav_size",           "ACC_Size"),
-        ("environment",        "ACC_Environment"),
-    ]:
-        task_acc[task_label] = round(
-            per_task_summary.get(task_key, {}).get("ACC", {}).get("mean", 0) * 100, 2
-        )
+    # paper table
+    def pct(x):
+        return round(x * 100, 2)
 
-    # ── Save paper-ready table results ────────────────────────────────────
-    table_results = {
-        'Method':  'CAPITA',
-        'Dataset': dataset_name,
-        # Overall
-        'BLEU-1':  round(results_summary['BLEU-1']['mean']  * 100, 2),
-        'BLEU-2':  round(results_summary['BLEU-2']['mean']  * 100, 2),
-        'BLEU-3':  round(results_summary['BLEU-3']['mean']  * 100, 2),
-        'BLEU-4':  round(results_summary['BLEU-4']['mean']  * 100, 2),
-        'ROUGE-1': round(results_summary['ROUGE-1']['mean'] * 100, 2),
-        'ROUGE-2': round(results_summary['ROUGE-2']['mean'] * 100, 2),
-        'ROUGE-L': round(results_summary['ROUGE-L']['mean'] * 100, 2),
-        'METEOR':  round(results_summary['METEOR']['mean']  * 100, 2),
-        'SPICE':   round(results_summary['SPICE']['mean']   * 100, 2),
-        'ACC':     round(results_summary['ACC']['mean']     * 100, 2),
-        # Per-task accuracy
-        **task_acc,
-    }
+    table = {'Method': 'CAPITA', 'Dataset': dataset_name}
+    for m in ['BLEU-1', 'BLEU-2', 'BLEU-3', 'BLEU-4', 'ROUGE-1', 'ROUGE-2',
+              'ROUGE-L', 'METEOR', 'SPICE']:
+        table[m] = pct(results_summary[m]['mean'])
+    table['ACC_BIN'] = pct(dataset_metrics['ACC_BIN'])
+    table['F1_OPEN'] = pct(dataset_metrics['F1_OPEN'])
+    table['VQA_SCORE'] = pct(dataset_metrics['VQA_SCORE'])
+    table['ACC_YesNo'] = pct(per_task_summary.get('yes_no', {}).get('ACC', {}).get('mean', 0))
+    for t, label in [('uav_size', 'F1_Size'), ('environment', 'F1_Environment'),
+                     ('motion_description', 'F1_Motion')]:
+        table[label] = pct(per_task_summary.get(t, {}).get('F1_OPEN', {}).get('mean', 0))
 
     table_path = output_dir / 'table_results.json'
     with open(table_path, 'w') as f:
-        json.dump(table_results, f, indent=2)
+        json.dump(table, f, indent=2)
     print(f"✓ Table results saved to: {table_path}")
 
-    # ── Print sample predictions ───────────────────────────────────────────
+    # samples
     print("\n" + "=" * 70)
     print("SAMPLE PREDICTIONS")
     print("=" * 70)
-
-    # Show 1 sample per task type
-    shown_tasks = set()
-    for pred in all_predictions:
-        task = pred['task_type']
-        if task in shown_tasks:
+    shown = set()
+    for p in all_predictions:
+        if p['task_type'] in shown:
             continue
-        shown_tasks.add(task)
-        print(f"\n{'='*60}")
-        print(f"Video: {pred['video_id']}  |  Task: {task}")
-        print(f"{'='*60}")
-        print(f"Question:  {pred['question']}")
-        print(f"Generated: {pred['generated_answer']}")
-        print(f"Reference: {pred['reference']}")
-        print(f"Metrics → BLEU-4: {pred.get('BLEU-4', 0):.4f} | "
-              f"METEOR: {pred.get('METEOR', 0):.4f} | "
-              f"SPICE: {pred.get('SPICE', 0):.4f} | "
-              f"ACC: {pred.get('ACC', 0):.4f}")
-        if len(shown_tasks) == 5:
+        shown.add(p['task_type'])
+        print(f"\nVideo: {p['video_id']} | Task: {p['task_type']}")
+        print(f"Question:  {p['question']}")
+        print(f"Generated: {p['generated_answer']}")
+        print(f"Reference: {p['reference']}")
+        print(f"BLEU-4: {fmt(p.get('BLEU-4'))} | METEOR: {fmt(p.get('METEOR'))} | "
+              f"SPICE: {fmt(p.get('SPICE'))} | ACC: {fmt(p.get('ACC'))} | "
+              f"F1: {fmt(p.get('F1_OPEN'))}")
+        if len(shown) == 5:
             break
 
-    # ── Print final summary table ──────────────────────────────────────────
+    # final tables
     print("\n" + "=" * 70)
     print("EVALUATION COMPLETE — CAPITA")
     print("=" * 70)
-    print(f"\n{'Metric':<14} {'Overall':>10}  {'Caption':>10}  {'Motion':>10}")
-    print("-" * 50)
-    for m in ['BLEU-1','BLEU-2','BLEU-3','BLEU-4','METEOR','SPICE','ROUGE-L']:
-        overall = results_summary[m]['mean'] * 100
-        cap     = per_task_summary.get('caption',{}).get(m,{}).get('mean',0) * 100
-        mot     = per_task_summary.get('motion', {}).get(m,{}).get('mean',0) * 100
-        print(f"  {m:<12} {overall:>10.2f}  {cap:>10.2f}  {mot:>10.2f}")
-    print("-" * 50)
-    print(f"\n{'Task':<20} {'ACC':>10}")
-    print("-" * 35)
-    for task, label in [
-        ('yes_no',      'Yes/No'),
-        ('size',        'UAV Size'),
-        ('environment', 'Environment'),
-    ]:
-        acc = per_task_summary.get(task, {}).get('ACC', {}).get('mean', 0) * 100
-        print(f"  {label:<18} {acc:>10.2f}")
+    print(f"\nBinary ACC  (N={dataset_metrics['N_BIN']}):  {dataset_metrics['ACC_BIN']:.4f}")
+    print(f"Open F1     (N={dataset_metrics['N_OPEN']}):  {dataset_metrics['F1_OPEN']:.4f}")
+    print(f"VQA score:  {dataset_metrics['VQA_SCORE']:.4f}")
 
-    print(f"\n{'Task':<25} {'ACC':>10}  {'BLEU-4':>10}  {'METEOR':>10}")
-    print("-" * 60)
-    for task_key, task_label in [
-        ("caption",            "Caption"),
-        ("yes_no",             "Yes/No"),
-        ("motion_description", "Motion"),
-        ("uav_size",           "UAV Size"),
-        ("environment",        "Environment"),
-    ]:
-        t     = per_task_summary.get(task_key, {})
-        acc   = t.get("ACC",    {}).get("mean", 0) * 100
-        bleu4 = t.get("BLEU-4", {}).get("mean", 0) * 100
-        meteor= t.get("METEOR", {}).get("mean", 0) * 100
-        print(f"  {task_label:<23} {acc:>10.2f}  {bleu4:>10.2f}  {meteor:>10.2f}")
-    print("-" * 60)
+    print(f"\n{'Metric':<12} {'Overall':>10} {'Caption':>10} {'Motion':>10}")
+    print("-" * 46)
+    for m in ['BLEU-1', 'BLEU-2', 'BLEU-3', 'BLEU-4', 'METEOR', 'SPICE', 'ROUGE-L']:
+        o = results_summary[m]['mean'] * 100
+        c = per_task_summary.get('caption', {}).get(m, {}).get('mean', 0) * 100
+        mo = per_task_summary.get('motion_description', {}).get(m, {}).get('mean', 0) * 100
+        print(f"{m:<12} {o:>10.2f} {c:>10.2f} {mo:>10.2f}")
 
+    print(f"\n{'Task':<22} {'ACC':>8} {'F1':>8} {'BLEU-4':>8} {'METEOR':>8}")
+    print("-" * 58)
+    for t, label in [('caption', 'Caption'), ('yes_no', 'Yes/No'),
+                     ('motion_description', 'Motion'), ('uav_size', 'UAV Size'),
+                     ('environment', 'Environment')]:
+        s = per_task_summary.get(t, {})
+        acc = s.get('ACC', {})
+        f1 = s.get('F1_OPEN', {})
+        acc_s = f"{acc['mean'] * 100:8.2f}" if acc.get('n') else "     n/a"
+        f1_s = f"{f1['mean'] * 100:8.2f}" if f1.get('n') else "     n/a"
+        b4 = s.get('BLEU-4', {}).get('mean', 0) * 100
+        me = s.get('METEOR', {}).get('mean', 0) * 100
+        print(f"{label:<22} {acc_s} {f1_s} {b4:>8.2f} {me:>8.2f}")
     print("=" * 70)
 
 
@@ -749,21 +416,16 @@ def save_results(
 
 def main():
     parser = argparse.ArgumentParser(description="CAPITA Evaluation")
-    parser.add_argument("--dataset",    type=str, default="MultiUAV",
+    parser.add_argument("--dataset", type=str, default="MultiUAV",
                         choices=["MultiUAV", "Anti-UAV", "NPS"])
-    parser.add_argument("--checkpoint", type=str, required=True,
-                        help="Path to best_model.pth or checkpoint_epoch_XXXX.pth")
-    parser.add_argument("--output_dir", type=str, default="./eval_results",
-                        help="Directory to save evaluation outputs")
-    parser.add_argument("--batch_size", type=int, default=1,
-                        help="Batch size for evaluation (1 recommended)")
-    parser.add_argument("--split",      type=str, default="test",
-                        choices=["test", "train"])
+    parser.add_argument("--checkpoint", type=str, required=True)
+    parser.add_argument("--output_dir", type=str, default="./eval_results")
+    parser.add_argument("--batch_size", type=int, default=1)
+    parser.add_argument("--split", type=str, default="test", choices=["test", "train"])
     args = parser.parse_args()
 
-    # ── Config ──────────────────────────────────────────────────────────────
     cfg = CAPITAConfig()
-    cfg.data.dataset_name  = args.dataset
+    cfg.data.dataset_name = args.dataset
     cfg.training.batch_size = args.batch_size
     device = torch.device(cfg.training.device)
 
@@ -774,45 +436,31 @@ def main():
     print(f"Checkpoint: {args.checkpoint}")
     print("=" * 70)
 
-    # ── Dataset & DataLoader ─────────────────────────────────────────────────
-    print("\nBuilding dataset...")
     eval_dataset = CAPITADataset(cfg, split=args.split)
-    eval_loader  = DataLoader(
-        eval_dataset,
-        batch_size=args.batch_size,
-        shuffle=False,
-        num_workers=2,
-        pin_memory=True,
-        collate_fn=capita_collate_fn,
-        drop_last=False,
-    )
+    eval_loader = DataLoader(eval_dataset, batch_size=args.batch_size, shuffle=False,
+                             num_workers=2, pin_memory=True,
+                             collate_fn=capita_collate_fn, drop_last=False)
     print(f"Evaluation samples: {len(eval_dataset)}")
 
-    # ── Load model ───────────────────────────────────────────────────────────
-    print("\nLoading CAPITA model...")
     model = CAPITAModel(cfg).to(device)
-
     checkpoint = torch.load(args.checkpoint, map_location=device)
-    # Handle both raw state_dict and full checkpoint formats
     state_dict = checkpoint.get("model", checkpoint)
     model.load_state_dict(state_dict, strict=True)
     print(f"✓ Checkpoint loaded: {args.checkpoint}")
 
-    # ── Metrics calculator ───────────────────────────────────────────────────
-    metrics_calc = TextMetrics()
+    metrics_calc = VQAMetrics()
 
-    # ── Run evaluation ───────────────────────────────────────────────────────
-    print("\nRunning evaluation...")
-    all_predictions, results_summary, per_task_summary = evaluate(
-        model, eval_loader, cfg, metrics_calc, device
-    )
+    all_predictions, results_summary, per_task_summary, dataset_metrics = evaluate(
+        model, eval_loader, cfg, metrics_calc, device)
 
-    # ── Save & display results ───────────────────────────────────────────────
-    save_results(
-        all_predictions, results_summary, per_task_summary,
-        output_dir, args.dataset
-    )
+    save_results(all_predictions, results_summary, per_task_summary,
+                 dataset_metrics, output_dir, args.dataset)
 
 
 if __name__ == "__main__":
-    main()
+    try:
+        main()
+    except Exception:
+        print("\n❌ EVALUATION FAILED:")
+        traceback.print_exc()
+        raise
