@@ -269,6 +269,28 @@ class VQAMetrics:
         f1 = 2 * precision * recall / (precision + recall)
         return f1
 
+    import re
+    import string
+    
+    def normalize_answer(self, answer: str) -> str:
+        """Normalize answers for exact-match evaluation."""
+        answer = answer.lower()
+        answer = answer.translate(
+            str.maketrans("", "", string.punctuation)
+        )
+        answer = re.sub(r"\s+", " ", answer).strip()
+        return answer
+    
+    
+    def compute_binary_accuracy(
+        self, reference: str, candidate: str
+    ) -> float:
+        """Exact-match accuracy for binary VQA."""
+        ref = self.normalize_answer(reference)
+        cand = self.normalize_answer(candidate)
+    
+        return float(ref == cand)
+
     def compute_acc_recall(self, reference: str, candidate: str) -> float:
         """
         ACC using Recall only (what percentage of reference words appear in candidate).
@@ -363,72 +385,40 @@ class VQAMetrics:
         # Use recall (what % of reference stems appear in candidate)
         return matched / len(ref_set)
 
-    def compute_acc_jrduav_style(self, reference: str, candidate: str, question: str = "") -> float:
-        """
-        ACC matching JTD-UAV paper approach.
-        Different matching for different question types.
-        """
-        from nltk.stem import PorterStemmer
-        import re
-        
-        ref_lower = reference.lower().strip()
-        cand_lower = candidate.lower().strip()
-        
-        # 1. YES/NO questions - exact match or synonyms
-        if ref_lower in ['yes', 'no', 'yes.', 'no.']:
-            if 'yes' in cand_lower and 'yes' in ref_lower:
-                return 1.0
-            if 'no' in cand_lower and 'no' in ref_lower:
-                return 1.0
-            return 0.0
-        
-        # 2. Number questions - check if number matches
-        ref_numbers = re.findall(r'\d+', reference)
-        cand_numbers = re.findall(r'\d+', candidate)
-        
-        if ref_numbers:
-            # If reference has numbers, check if they appear in candidate
-            matched_nums = sum(1 for num in ref_numbers if num in cand_numbers)
-            num_score = matched_nums / len(ref_numbers) if len(ref_numbers) > 0 else 0
-            
-            # If numbers match perfectly, give high score
-            if num_score == 1.0:
-                return 0.9  # High score for correct number
-        
-        # 3. Descriptive answers - use stemmed word overlap
-        stemmer = PorterStemmer()
-        
-        minimal_stopwords = {
-            'a', 'an', 'the', 'is', 'are', 'was', 'were', 'be',
-            'have', 'has', 'had', 'do', 'does', 'did',
-            'to', 'of', 'in', 'for', 'and', 'or', 'but',
-            'it', 'this', 'that', 'they', 'them'
-        }
-        
-        ref_words = [stemmer.stem(w) for w in re.findall(r'\b\w+\b', ref_lower)
-                    if w not in minimal_stopwords and len(w) > 1]
-        cand_words = [stemmer.stem(w) for w in re.findall(r'\b\w+\b', cand_lower)
-                    if w not in minimal_stopwords and len(w) > 1]
-        
-        if len(ref_words) == 0:
+    from collections import Counter
+
+    def compute_open_f1(
+        self, reference: str, candidate: str
+    ) -> float:
+        """Token-level F1 for open-ended VQA."""
+        ref_tokens = re.findall(
+            r"\b\w+\b", self.normalize_answer(reference)
+        )
+        cand_tokens = re.findall(
+            r"\b\w+\b", self.normalize_answer(candidate)
+        )
+    
+        ref_counts = Counter(ref_tokens)
+        cand_counts = Counter(cand_tokens)
+    
+        # Count overlapping tokens, including repeated occurrences.
+        overlap = sum(
+            (ref_counts & cand_counts).values()
+        )
+    
+        if not ref_tokens and not cand_tokens:
             return 1.0
-        
-        if len(cand_words) == 0:
+    
+        if not ref_tokens or not cand_tokens:
             return 0.0
-        
-        # Calculate recall
-        ref_set = set(ref_words)
-        cand_set = set(cand_words)
-        matched = len(ref_set & cand_set)
-        
-        recall = matched / len(ref_set)
-        
-        # Boost score if key semantic terms match
-        # (this is likely what makes JTD-UAV ACC so high)
-        if recall > 0.3:  # If at least 30% match, be generous
-            recall = min(1.0, recall * 1.3)  # Boost by 30%
-        
-        return recall
+    
+        precision = overlap / len(cand_tokens)
+        recall = overlap / len(ref_tokens)
+    
+        if precision + recall == 0:
+            return 0.0
+    
+        return 2 * precision * recall / (precision + recall)
 
     def compute_all(self, reference: str, candidate: str, question: str) -> dict:
         """Compute all metrics including multiple ACC variants."""
@@ -438,17 +428,24 @@ class VQAMetrics:
         metrics['METEOR'] = self.compute_meteor(reference, candidate)
         metrics['SPICE'] = self.compute_spice(reference, candidate)
         
-        # Multiple ACC methods - use the best one for comparison
-        metrics['ACC_F1'] = self.compute_acc_f1(reference, candidate)
-        metrics['ACC_Recall'] = self.compute_acc_recall(reference, candidate)
-        metrics['ACC_Lenient'] = self.compute_acc_lenient(reference, candidate)
-        metrics['ACC_Semantic'] = self.compute_acc_semantic(reference, candidate)
-        metrics['ACC_JRDUAV'] = self.compute_acc_jrduav_style(reference, candidate, question)
-
-        
-        # Primary ACC (use the one that matches JTD-UAV best - likely Lenient or Semantic)
-        metrics['ACC'] = metrics['ACC_JRDUAV']  # This should give higher scores
-        
+         # Determine question type.
+        if question_type is None:
+            normalized_ref = self.normalize_answer(reference)
+            is_binary = normalized_ref in {"yes", "no"}
+        else:
+            is_binary = question_type.lower() == "binary"
+    
+        if is_binary:
+            metrics["ACC"] = self.compute_binary_accuracy(
+                reference, candidate
+            )
+            metrics["F1_OPEN"] = None
+        else:
+            metrics["ACC"] = None
+            metrics["F1_OPEN"] = self.compute_open_f1(
+                reference, candidate
+            )
+    
         return metrics
 
 
