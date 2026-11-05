@@ -2,7 +2,7 @@
 CAPITA Evaluation Script (fixed)
 Text metrics: BLEU-1/2/3/4, ROUGE-1/2/L, METEOR, SPICE  (all tasks)
 VQA metrics : binary exact-match ACC (yes/no), open-ended token F1 (other QA),
-              composite VQA score = (ACC_bin + F1_open) / 2   (QA only, not caption)
+composite VQA score = (ACC_bin + F1_open) / 2   (QA only, not caption)
 """
 
 import json
